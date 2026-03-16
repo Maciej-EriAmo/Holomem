@@ -1,2 +1,0 @@
-# Holomem
-Holomem — holographic memory
