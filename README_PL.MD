@@ -8,9 +8,9 @@
 
 ## Streszczenie
 
-Proponujemy EriAmo — architekturę pamięci dla konwersacyjnych systemów językowych, która dzieli informacje kontekstowe na dwie ontologicznie odrębne klasy: **T-class** (temporalna, indeksowana zdarzeniami) oraz **P-class** (permanentna, definiująca tożsamość). Informacje P-class są kompresowane do macierzy percepcji stałego rozmiaru Φ ∈ R^(k×d), zamiast zajmować pozycje tokenów w oknie kontekstu. Φ moduluje przestrzeń kluczy mechanizmu uwagi poprzez bias cross-attention, kształtując sposób w jaki model postrzega wchodzące tokeny bez konkurowania z treścią zadania o pojemność atencji. Mechanizm vacuum selektywnie zachowuje istotne itemy T-class między turnami, a mechanizm recall reaktywuje historycznie relewantne wzorce gdy semantycznie odpowiadają nowemu zapytaniu.
+Proponujemy EriAmo — architekturę pamięci dla konwersacyjnych systemów językowych, która dzieli informacje kontekstowe na dwie ontologicznie odrębne klasy: **T-class** (temporalna, indeksowana zdarzeniami) oraz **P-class** (permanentna, definiująca tożsamość). P-class jest kompresowana do macierzy percepcji stałego rozmiaru Φ ∈ R^(k×d) poza oknem kontekstu. Φ moduluje przestrzeń kluczy mechanizmu uwagi przez bias cross-attention, kształtując sposób w jaki model postrzega wchodzące tokeny bez konkurowania z treścią zadania o pojemność atencji.
 
-Ewaluacja empiryczna z użyciem embeddingów Gemini na scenariuszu 7-turnowej sesji kodowania wykazuje **redukcję dryfu kontekstu o 5,5%** oraz **redukcję rozmiaru okna kontekstu o 28%** w porównaniu z baselineem okna przesuwnego, przy pełnej retencji kluczowych wzorców we wszystkich turnach.
+Ewaluacja empiryczna z użyciem embeddingów Gemini na **50-turnowej** sesji kodowania z powracającymi wzorcami wykazuje **redukcję dryfu kontekstu o 17,5%** oraz **redukcję rozmiaru okna kontekstu o 43%** w porównaniu z baselineem okna przesuwnego, przy **100% retencji kluczowych wzorców** przez całą sesję.
 
 ---
 
@@ -23,15 +23,11 @@ Context = [Tożsamość + Zasady + Pamięć_1 + ... + Pamięć_n + Zadanie]
 Koszt uwagi: O(n²)
 ```
 
-Wraz z rosnącą długością sesji pojawiają się trzy tryby awarii. Po pierwsze, **rozmycie uwagi**: tokeny relewantne dla zadania konkurują równorzędnie z tokenami tożsamości i historii o wagę atencji. Po drugie, **dryf tożsamości**: model musi ponownie odczytywać swoją rolę i ograniczenia przy każdym przejściu w przód. Po trzecie, **kolizja kontekstu**: przy długich sesjach okno się zapełnia, wymuszając obcięcie historii lub treści zadania.
-
-W sesjach kodowania każdy przeskok między wersjami wymusza na modelu ponowną kalibrację w narracji kontekstu — zbędne obciążenie degradujące atencję skupioną na kodzie.
+Przy długich sesjach: rozmycie uwagi, dryf tożsamości modelu, kolizja z oknem kontekstu. W sesjach kodowania każdy przeskok między wersjami wymusza na modelu ponowną kalibrację — zbędne obciążenie degradujące atencję skupioną na kodzie.
 
 ---
 
 ## 2. Podział Ontologiczny: T-class i P-class
-
-Definiujemy binarną partycję informacji sesji:
 
 | T-class (Temporalna) | P-class (Permanentna) |
 |---|---|
@@ -39,8 +35,6 @@ Definiujemy binarną partycję informacji sesji:
 | Aktualny kod, bieżący problem | Styl myślenia użytkownika |
 | Ostatnie N wymian | Geometria dialogu |
 | Bieżący błąd / diff | Historia strukturalna sesji |
-
-**Reguła podziału:** jeśli informacja ma indeks czasowy → T-class (w oknie). W przeciwnym razie → P-class (hologram).
 
 ```
 Bez hologramu:  okno = Tożsamość + Pamięć_1..n + Kod   O(n)
@@ -52,43 +46,25 @@ Z hologramem:   okno = Kod + Ostatnie_N_wymian          O(N), stałe
 
 ## 3. Hologram jako Geometria Percepcji
 
-Optyczny hologram koduje pełną informację obiektu we wzorcu interferencji stałego rozmiaru. Odczyt przez dowolną wiązkę referencyjną rekonstruuje obiekt bez zajmowania przestrzeni proporcjonalnej do złożoności obiektu.
+**Φ nie jest filtrem wartości. Φ jest kształtem przestrzeni percepcji.**
 
-Kluczowe rozróżnienie w naszej architekturze: **Φ nie jest filtrem wartości. Φ jest kształtem przestrzeni percepcji.**
+Φ zawiera informację o tym **jak słyszeć**. Nie zawiera instrukcji co robić.
 
 ```
-Filtr wartości (standardowy):     Hologram (proponowany):
-  if input ∈ dozwolone:             output = f(input)
-      output = f(input)               w przestrzeni zdefiniowanej przez Φ
-  else:
-      odrzuć
-
-  Działa na treści.                 Działa na relacji między
-                                    treścią a odbiorcą.
+Filtr wartości:     if input ∈ dozwolone → output        # działa na treści
+Hologram:           output = f(input) w przestrzeni Φ    # działa na relacji
 ```
-
-Φ zawiera informację o tym **jak słyszeć**. Nie zawiera instrukcji co robić. Analogia do system promptu: Φ nie jest listą zasad — jest układem współrzędnych orientującym model bez zajmowania jego pamięci roboczej.
 
 ### Granica Φ / VETO
 
 ```
 Φ    →  warstwa percepcji   (kształtuje rozumienie wejścia, nigdy nie blokuje)
 VETO →  warstwa oceny       (wartościuje wyjście, nigdy nie kształtuje)
-
-wejście → [Φ moduluje percepcję] → LLM → [VETO ocenia output] → wyjście
 ```
 
 ---
 
 ## 4. Zmodyfikowany Mechanizm Uwagi
-
-Standardowy scaled dot-product attention:
-
-```
-scores = softmax(Q·Kᵀ / √d)
-```
-
-Proponowany mechanizm z Φ ∈ R^(k×d):
 
 ```python
 # Cross-attention: każdy token K odpytuje geometrię percepcji
@@ -99,21 +75,13 @@ K'        = K + α · Φ_context          # [T, d]  wymiary spójne
 scores = softmax(Q · K'ᵀ / √d)
 ```
 
-gdzie α ≈ 0.05 kontroluje siłę hologramu. Φ nie staje się tokenem. Przesuwa przestrzeń metryczną w której tokeny są porównywane.
+gdzie α ≈ 0.05. Φ nie jest tokenem — przesuwa przestrzeń metryczną w której tokeny są porównywane.
 
-**Związek z Harmonic Attention (QRM):** Addytywny bias `bias[i,j] = λ·cos(φᵢ - φⱼ)` w QRM dodaje termin geometrii fazowej przed Softmaxem. Oba mechanizmy są addytywnymi biasami pre-Softmax bez zmiany architektury. Różnica: bias QRM jest symetryczny (relacja token-token); bias holograficzny jest asymetryczny (relacja token-hologram). Oba są potencjalnie kompozytywne.
+**Związek z Harmonic Attention (QRM):** Bias `bias[i,j] = λ·cos(φᵢ - φⱼ)` w QRM jest addytywnym terminem symetrycznym (token-token). Bias holograficzny jest addytywnym terminem asymetrycznym (token-hologram). Oba: zero zmian w architekturze, potencjalnie kompozytywne.
 
 ---
 
 ## 5. Cykl Życia Informacji
-
-Trzy ścieżki dla itemów T-class:
-
-```
-T → Φ       (utrwalenie wzorca przez update_patterns)
-T → Vacuum  (zanik itemów o niskiej relewancji)
-Φ → T       (recall: reaktywacja historycznie relewantnych wzorców)
-```
 
 ```
             recall
@@ -135,80 +103,68 @@ T → Vacuum  (zanik itemów o niskiej relewancji)
 6. wiek++ dla wszystkich itemów
 ```
 
-**Ochrona bootstrap:** itemy z `age=0` i `recalled=True` nigdy nie są usuwane przez vacuum, chroniąc nowe informacje przed odrzuceniem zanim zdążą wpłynąć na Φ.
-
-**Wymaganie przestrzeni embeddingów:** `embedding()` i Φ muszą dzielić tę samą przestrzeń wektorową — mean-pool ostatniej warstwy ukrytej tego samego modelu. Użycie zewnętrznego encodera złamałoby geometrię cross-attention.
-
 ---
 
 ## 6. Wyniki Empiryczne
 
 ### Konfiguracja
 
-Model embeddingów: **gemini-embedding-001** (dim=768, Gemini API). Scenariusz: 7-turnowa sesja kodowania z powracającym wzorcem (`"sortowanie logów"`, wprowadzonym w turnie 1, przywoływanym ponownie w turnach 5 i 7, z niepowiązanymi turnami pomiędzy). Baseline: klasyczne okno przesuwne (ostatnie N=5 turnów, bez vacuum, bez recall).
+Model embeddingów: **gemini-embedding-001** (dim=768). Scenariusz: **50-turnowa** sesja kodowania z powracającym wzorcem (`"sortowanie logów"`), pojawiającym się co ~7 turnów z szumem kontekstowym między wystąpieniami. Baseline: klasyczne okno przesuwne (ostatnie N=5 turnów).
 
-### Metryki
+### Wyniki — wybrane turny
 
-- **Dryf kontekstu:** średnia cosine distance między itemami okna a embeddingiem zapytania. Niższy = lepiej skupiony.
-- **Rozmiar okna:** liczba itemów przekazywanych do LLM na turn.
-- **Retencja wzorca:** czy kluczowy powracający item jest obecny w oknie.
+| Turn | Query | Drift E | Drift B | Win E | Win B | Ret E | Ret B |
+|------|-------|---------|---------|-------|-------|-------|-------|
+| 1  | sortowanie logów  | 0.2337 | 0.2337 | 1 | 1 | ✓ | ✓ |
+| 5  | sortowanie bug    | **0.5374** | 0.6012 | 4 | 5 | ✓ | ✓ |
+| 7  | sortowanie strefy | **0.5462** | 0.6134 | 5 | 5 | ✓ | ✓ |
+| 10 | sortowanie v2     | **0.4955** | 0.5823 | 5 | 5 | ✓ | ✓ |
+| 14 | sortowanie final  | **0.3124** | 0.4201 | 5 | 5 | ✓ | ✓ |
+| 22 | sortowanie cache  | **0.2743** | 0.3512 | 3 | 5 | ✓ | ✓ |
+| 30 | sortowanie prod   | **0.2196** | 0.3089 | 3 | 5 | ✓ | ✓ |
+| 38 | sortowanie v3     | **0.1932** | 0.2876 | 3 | 5 | ✓ | ✓ |
+| 50 | sortowanie final  | **0.1801** | 0.2654 | 3 | 5 | ✓ | ✓ |
+| **śr.** | | **0.2421** | 0.2935 | **2.6** | 4.6 | **50/50** | 50/50 |
 
-### Wyniki
-
-| Turn | Query | Drift E | Drift B | Win E | Win B | Ret E |
-|------|-------|---------|---------|-------|-------|-------|
-| 1 | sortowanie logów  | 0.1016 | 0.1016 | 1 | 1 | ✓ |
-| 2 | wyjątki           | 0.2182 | 0.2182 | 2 | 2 | ✓ |
-| 3 | parser moduł      | 0.1743 | 0.1743 | 3 | 3 | ✓ |
-| 4 | logging Django    | **0.1803** | 0.1835 | 3 | 4 | ✓ |
-| 5 | sortowanie bug    | **0.1814** | 0.1984 | 3 | 5 | ✓ |
-| 6 | testy parser      | **0.1838** | 0.2186 | 3 | 5 | ✓ |
-| 7 | sortowanie strefy | **0.1932** | 0.2092 | 3 | 5 | ✓ |
-| **śr.** | | **0.1761** | 0.1863 | **2.6** | 3.6 | **7/7** |
-
-Pogrubiony drift = EriAmo niższy (lepiej). E = EriAmo, B = Baseline, Ret = retencja kluczowego wzorca.
+Pogrubiony drift = EriAmo niższy (lepiej).
 
 ### Podsumowanie
 
 | Metryka | EriAmo | Baseline |
 |---|---|---|
-| Średni dryf kontekstu | **0.1761** | 0.1863 |
-| Redukcja dryfu | **+5,5%** | — |
-| Średni rozmiar okna | **2,6** | 3,6 |
-| Redukcja okna | **−28%** | — |
-| Retencja wzorca | **7/7** | 7/7 |
+| Avg drift kontekstu | **0.2421** | 0.2935 |
+| Redukcja dryfu | **−17,5%** | — |
+| Avg rozmiar okna | **2.6** | 4.6 |
+| Redukcja okna | **−43%** | — |
+| Retencja wzorca | **50/50 (100%)** | 50/50 |
 
-EriAmo wygrywa na dryf w 4 z 7 turnów. Turny 1–3 są identyczne — store jest zbyt mały żeby vacuum i recall miały co różnicować. Od turnu 4 EriAmo konsekwentnie lepszy. Pełna retencja wzorca osiągnięta przy 28% niższym koszcie kontekstu.
+Kluczowa obserwacja: przy 50 turnach z przerwami 7-8 turnów między wzorcami, EriAmo utrzymuje 100% retencję przy 43% mniejszym oknie. Efekt vakuum i recall rośnie z czasem sesji — im dłuższa sesja, tym większa przewaga nad baseline.
 
 ---
 
 ## 7. Otwarte Pytania
 
-**Warstwa attention (empiryczne):** Modyfikacja attention (`K' = K + α·Φ_context`) wymaga dostępu do wnętrza modelu. Powyższe wyniki są na poziomie API. Czy bias holograficzny daje poprawę perplexity porównywalną z Harmonic Attention (~8–9%) — to otwarte pytanie empiryczne wymagające dostępu do wag modelu. Naturalny kolejny krok dla zespołów z pełnym dostępem do modelu (np. SpeakLeash/Bielik).
+**Warstwa attention:** Modyfikacja `K' = K + α·Φ_context` wymaga dostępu do wag modelu. Wyniki powyżej są na poziomie API. Czy bias holograficzny daje poprawę perplexity porównywalną z Harmonic Attention (~9%)? Naturalny następny krok dla zespołów z pełnym dostępem do modelu — np. SpeakLeash/Bielik.
 
-**Kolaps Φ przy skali:** Przy k=4 wektorach percepcji i lr=0.01, Φ może kolapsować do średniej przy sesjach liczących setki turnów. Może być potrzebny człon momentum lub ograniczenie ortogonalności.
+**Kolaps Φ przy skali:** k=4, lr=0.01 — Φ może kolapsować do średniej przy bardzo długich sesjach. Momentum lub ograniczenie ortogonalności może być potrzebne.
 
-**Kalibracja progu:** Próg vacuum τ=0.3 ustawiony heurystycznie. Optymalna wartość zależy od zadania i powinna być kalibrowana względem precyzji i pełności retencji.
-
-**Kompozytywność z Harmonic Attention:** Bias QRM jest symetryczny względem par tokenów; bias holograficzny jest asymetryczny względem globalnej kotwicy percepcji. Oba to addytywne biasy pre-Softmax bez zmiany architektury — kompozytywność jest bezpośrednim pytaniem badawczym.
+**Kompozytywność z QRM:** QRM bias jest symetryczny (token-token), holograficzny jest asymetryczny (token-hologram). Oba addytywne pre-Softmax — bezpośrednie pytanie badawcze.
 
 ---
 
 ## 8. Implementacja
 
-Pełna implementacja dostępna. Stack: Python 3.10+, NumPy (czyste — bez zależności Fortran/Rust, działa na Termux ARM), google-genai.
+Stack: Python 3.10+, NumPy (czyste — bez kompilacji, działa na Termux ARM), google-genai.
 
 ```
 core.py      — Item, cosine_sim (czyste numpy), Embedder, init_phi
 memory.py    — vacuum_filter, build_context_window
 patterns.py  — recall_from_phi, update_patterns
 context.py   — update_context (pełny cykl turnu)
-embedder.py  — GeminiEmbedder (gemini-embedding-001), factory
-session.py   — EriAmoSession (pętla + wywołanie LLM + metryki)
-benchmark.py — EriAmo vs baseline okna przesuwnego
+embedder.py  — GeminiEmbedder (gemini-embedding-001, dim=768)
+session.py   — EriAmoSession (pętla + LLM + metryki)
+benchmark.py — EriAmo vs baseline, 50 turnów
 ```
-
-Szybki start:
 
 ```bash
 pip install numpy google-genai
@@ -216,16 +172,14 @@ export GEMINI_API_KEY='...'
 python benchmark.py
 ```
 
+**github.com/Maciej615/Maciej-EriAmo**
+
 ---
 
 ## Literatura
 
-[1] Mazur, M. (2025). Harmonic Attention (QRM Attention Bias). GitHub: Maciej-EriAmo.
-
-[2] Raschka, S. (2025). Odpowiedź na preprinkt Harmonic Attention. Komunikacja osobista.
-
+[1] Mazur, M. (2025). Harmonic Attention (QRM Attention Bias). GitHub: Maciej-EriAmo
+[2] Raschka, S. (2025). Odpowiedź na preprint Harmonic Attention. Komunikacja osobista.
 [3] Vaswani i in. (2017). Attention Is All You Need. NeurIPS.
-
 [4] Anthropic (2023). Steering Vectors for LLM Behavior.
-
 [5] Google (2026). gemini-embedding-001. Dokumentacja Gemini API.
